@@ -2,27 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 convert_dm_pm_to_nc.py — batch sur sous-dossiers dm/pm, sortie miroir dans netcdf/
-
-Exemples (PowerShell) :
-  # Tout le dossier (tous les sous-dossiers et tous les fichiers)
-  python convert_dm_pm_to_nc.py --root "C:/Users/ludov/Desktop/hl-b274" --all
-
-  # Un seul sous-dossier
-  python convert_dm_pm_to_nc.py --root "C:/Users/ludov/Desktop/hl-b274" --dir 000960
-
-  # Plage de sous-dossiers (inclusif, trié par nom)
-  python convert_dm_pm_to_nc.py --root "C:/Users/ludov/Desktop/hl-b274" --dir-range 000960 003840
-
-  # Dans chaque sous-dossier sélectionné : un seul fichier d'index N (ex: *_dm_000007p_*)
-  python convert_dm_pm_to_nc.py --root "C:/Users/ludov/Desktop/hl-b274" --dir 000960 --one 7
-
-  # Dans chaque sous-dossier sélectionné : plage d'index (ex: 0..3)
-  python convert_dm_pm_to_nc.py --root "C:/Users/ludov/Desktop/hl-b274" --dir 000960 --range 0 3
-
-Mode fichier unique (hérité) :
-  python convert_dm_pm_to_nc.py --dm "...\dm\hl-b274_dm_000000p_ls000.0000" ^
-                                --pm "...\pm\hl-b274_pm_000000p_ls000.0000" ^
-                                --out "...\netcdf\000960\hl-b274_000000p_ls000_0000.nc"
 """
 
 import argparse
@@ -46,7 +25,7 @@ except Exception:
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Variables par défaut (selon le mail)
+# Variables par défaut
 VARS_DEFAULT = [
     "TT", "PX", "GZ", "WW", "H2O", "CO2", "O3", "CO", "T9",
     "P0",
@@ -315,3 +294,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
