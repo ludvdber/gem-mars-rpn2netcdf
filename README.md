@@ -4,57 +4,70 @@ A tiny CLI tool to convert GEM-Mars RPN files (dm + pm) to NetCDF4, with sane de
 
 ## What it does (default behavior)
 
-- Reads paired dm/pm RPN files via fstd2nc.
-- Adds a time coordinate: time = reftime + leadtime (if both exist).
-- Converts units (per spec):
-- - TT: °C → K (+273.15)
-- - PX, P0: hPa → Pa (×100)
-- - GZ: decametre → m (×10)
-- - UU, VV: knots → m s⁻¹ (×0.5144)
-- - WW: already in Pa s⁻¹ (unchanged)
-- Forces PX and GZ to 103 levels (all thermodynamic + surface).
-(Internally selects even indices 0..202 plus surface 203 from the 204-level interleaved grid.)
-- Sets GZ(surface) = 0 (height above surface).
-- Writes NetCDF-4/HDF5 with lossless compression (zlib level 4, shuffle on).
-- Adds simple units metadata.
+- **Paired file processing**: Reads dm + pm RPN files via fstd2nc
+- **Time coordinate**: Computes `time = reftime + leadtime`
+- **Unit conversions**:
+  - TT: °C → K (+273.15)
+  - PX, P0: hPa → Pa (×100)
+  - GZ: decametre → m (×10)
+  - UU, VV: knots → m s⁻¹ (×0.5144)
+  - WW: already in Pa s⁻¹ (unchanged)
+- **Vertical interpolation**: 
+  - Thermodynamic variables (TT, PX, GZ, etc.) interpolated to 103 common altitude levels
+  - Momentum variables (UU, VV) interpolated to 102 common altitude levels
+  - GZ set to height above surface (GZ_surface = 0)
+- **Optimized output**:
+  - NetCDF-4 format with lossless compression (zlib level 6)
+  - float32 precision (reduces file size)
+  - CF-1.10 compliant metadata
+- **Progress tracking**: Optional tqdm progress bar
 
 ## Folder layout (expected)
 
-Your project root (e.g. hl-b274) contains:
+Your project root (e.g., `hl-b274`) should contain:
 
-- hl-b274/ 
-  - dm/
-    - 000960/
-      - hl-b274_dm_000000p_ls000.0000
-      - hl-b274_dm_000001p_ls000.0100
-      - ...
-    - 001920/
-      - ...
-  - pm/
-    - 000960/
-      - hl-b274_pm_000000p_ls000.0000
-      - hl-b274_pm_000001p_ls000.0100
-      - ...
-    - 001920/
-      - ...
-  - netcdf/           # outputs will mirror dm/pm structure here
+```
+hl-b274/
+├── dm/
+│   ├── 000960/
+│   │   ├── hl-b274_dm_000000p_ls000.0000
+│   │   ├── hl-b274_dm_000001p_ls000.0100
+│   │   └── ...
+│   ├── 001920/
+│   └── ...
+├── pm/
+│   ├── 000960/
+│   │   ├── hl-b274_pm_000000p_ls000.0000
+│   │   ├── hl-b274_pm_000001p_ls000.0100
+│   │   └── ...
+│   ├── 001920/
+│   └── ...
+└── netcdf/           # outputs will be created here
+    ├── 000960/
+    │   ├── hl-b274_000000p_ls000_0000.nc
+    │   ├── hl-b274_000001p_ls000_0100.nc
+    │   └── ...
+    └── ...
+```
 
-For each dm/SUBDIR/file, the script looks for the matching pm/SUBDIR/file (same name with _ pm _), and writes to netcdf/SUBDIR/.
+For each `dm/SUBDIR/file`, the script looks for the matching `pm/SUBDIR/file` and writes to `netcdf/SUBDIR/`.
 
-Output naming keeps the numbers from the RPN extension:
+**Output naming**: Keeps the numbers from the RPN extension:
+```
+hl-b274_dm_000000p_ls000.0000  →  netcdf/000960/hl-b274_000000p_ls000_0000.nc
+```
 
-hl-b274_dm_000000p_ls000.0000   →   netcdf/000960/hl-b274_000000p_ls000_0000.nc
-
-## Install
-- Python 3.10+ recommended.
-- xarray
-- netCDF4
-- fstd2nc
-- tqdm
+## Installation
+- Python 3.11+ recommended.
+  - xarray
+  - netCDF4
+  - fstd2nc
+  - tqdm
+  - numpy
 
 tqdm is optional (nice progress bar).
 ```
-pip install xarray netCDF4 fstd2nc tqdm
+pip install numpy xarray netCDF4 fstd2nc tqdm
 ```
 
 
@@ -76,26 +89,26 @@ Define your ROOT (path to the folder that contains dm/, pm/, netcdf/)
     cd /path/to/your/repo  #folder where convert_dm_pm_to_nc.py lives
     ```
 
-- ### Windows PowerShell
+  - ### Windows PowerShell
 
-    ``` 
-    $ROOT = "$env:USERPROFILE\Desktop\hl-b274"
-    Set-Location C:\Users\USERPROFILE\PythonFile
-   ``` 
+      ``` 
+      $ROOT = "$env:USERPROFILE\Desktop\hl-b274"
+      Set-Location C:\Users\USERPROFILE\PythonFile
+     ``` 
   
-1. All subfolders and all files
+  1. All subfolders and all files
 
-- ### Linux
+  - ### Linux
 
-    ```
-    python convert_dm_pm_to_nc.py --root "$ROOT" --all
-   ```
+      ```
+      python convert_dm_pm_to_nc.py --root "$ROOT" --all
+     ```
 
-- ### Windows PowerShell
+  - ### Windows PowerShell
 
-    ``` 
-    python .\convert_dm_pm_to_nc.py --root "$ROOT" --all
-   ``` 
+      ``` 
+      python .\convert_dm_pm_to_nc.py --root "$ROOT" --all
+     ``` 
   
 
 2. One specific subfolder (e.g., 000960)
@@ -130,13 +143,37 @@ With tqdm installed, you get a progress bar and a ```[i/total] WROTE <path> ``` 
 ## Selecting variables
 
 By default, the script loads exactly the variables requested in the project spec:
-```
-TT, PX, GZ, WW, H2O, CO2, O3, CO, T9,
-P0,
-UU, VV,
-MLOC, MALO, MCZ, MH, MTSF, MCO2, MSN,
-DVM1, DVM2, DVM3, RWIC
-```
+
+### Default variables (28 total)
+
+**3D Thermodynamic** (103 levels):
+- `TT` - Temperature (K)
+- `PX` - Pressure (Pa)
+- `GZ` - Geopotential height (m above surface)
+- `WW` - Vertical velocity (Pa/s)
+- `H2O`, `CO2`, `O3`, `CO` - Trace gases
+- `T9` - Temperature perturbation
+- `DVM1`, `DVM2`, `DVM3` - Dust moments
+- `RWIC` - Ice particle radius
+
+**3D Momentum** (102 levels):
+- `UU` - Eastward wind (m/s)
+- `VV` - Northward wind (m/s)
+
+**2D Surface**:
+- `P0` - Surface pressure (Pa)
+- `MTSF` - Surface temperature (K)
+- `MLOC` - Local time
+- `MALO`, `MCZ`, `MH`, `MCO2`, `MSN` - Additional surface fields
+
+### Output dimensions
+
+- `time`: 1 (unlimited dimension)
+- `lat`: 45 (latitudes, -88° to 88°)
+- `lon`: 91 (longitudes, 0° to 360°)
+- `altitudeT`: 103 (thermodynamic vertical levels)
+- `altitudeM`: 102 (momentum vertical levels)
+
 You can override:
 - Keep all variables present:
 ```
