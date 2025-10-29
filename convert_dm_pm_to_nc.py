@@ -12,10 +12,10 @@ import time
 import warnings
 from pathlib import Path
 
+import numpy as np
+from netCDF4 import Dataset
 import xarray as xr
 import fstd2nc
-from netCDF4 import Dataset
-import numpy as np
 
 # Progress bar optionnelle
 try:
@@ -77,11 +77,11 @@ VARIABLE_CONFIG = {
     'RWIC': ('RWIC', ('time', 'altitudeT', 'lat', 'lon'), 'micron',
              'effective_radius_of_water_ice_particles', 'Water ice particle effective radius'),
 
-    # === Variables 3D Momentum (102 niveaux) - TODO ===
-    # 'UU': ('UU', ('time', 'altitudeM', 'lat', 'lon'), 'm s-1',
-    #        'eastward_wind', 'Eastward wind (E-W)'),
-    # 'VV': ('VV', ('time', 'altitudeM', 'lat', 'lon'), 'm s-1',
-    #        'northward_wind', 'Northward wind (N-S)'),
+    # === Variables 3D Momentum (102 niveaux) ===
+    'UU': ('UU', ('time', 'altitudeM', 'lat', 'lon'), 'm s-1',
+           'eastward_wind', 'Eastward wind (E-W)'),
+    'VV': ('VV', ('time', 'altitudeM', 'lat', 'lon'), 'm s-1',
+           'northward_wind', 'Northward wind (N-S)'),
 
     # === Variables 2D Surface ===
     'P0': ('P0', ('time', 'lat', 'lon'), 'Pa',
@@ -106,14 +106,21 @@ VARIABLE_CONFIG = {
 # ==================== FONCTIONS UTILITAIRES ====================
 
 def open_dataset(dm_path: Path, pm_path: Path | None, vars_keep: list[str] | None) -> xr.Dataset:
-    """Charge les fichiers FSTD dm/pm et retourne un xarray Dataset fusionné."""
+    """
+    Charge les fichiers FSTD dm/pm et retourne un xarray Dataset fusionné.
+    Optimisé: utilise chunks pour lazy loading efficace.
+    """
     files = [str(dm_path)]
     if pm_path:
         files.append(str(pm_path))
 
     kwargs = {"vars": vars_keep} if vars_keep else {}
     buf = fstd2nc.Buffer(files, **kwargs)
-    return buf.to_xarray(fused=True)
+
+    # Charger avec chunks pour lazy loading (permet à dask de paralléliser)
+    ds = buf.to_xarray(fused=True)
+
+    return ds
 
 
 def add_time_coordinate(ds: xr.Dataset) -> xr.Dataset:
@@ -132,7 +139,7 @@ def convert_units(ds: xr.Dataset) -> xr.Dataset:
     """Convertit les unités vers le système SI et conventions CF."""
     ds = ds.copy()
 
-    # Températures: C → K
+    # Températures : C → K
     if "TT" in ds:
         ds["TT"] = ds["TT"] + 273.15
     if "MTSF" in ds:
@@ -180,6 +187,51 @@ def reduce_px_gz_to_thermo(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+def rename_momentum_levels(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Renomme level3 → level4 pour UU et VV.
+
+    fstd2nc charge UU/VV sur level3 (102 niveaux momentum),
+    mais notre code attend level4 pour cohérence.
+    """
+    # Renommer level3 → level4 pour UU si présent
+    if 'UU' in ds and 'level3' in ds['UU'].dims:
+        ds['UU'] = ds['UU'].rename({'level3': 'level4'})
+
+    # Renommer level3 → level4 pour VV si présent
+    if 'VV' in ds and 'level3' in ds['VV'].dims:
+        ds['VV'] = ds['VV'].rename({'level3': 'level4'})
+
+    return ds
+
+
+def extract_gz_momentum(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Extrait GZ sur les 102 niveaux momentum depuis level2 (204 niveaux).
+
+    La grille level2 (204) structure :
+    - Indices 0-201: alternance M T M T ... (101 M + 101 T)
+    - Indices 202-203: T S (thermo final + surface)
+
+    Les niveaux momentum sont aux indices impairs 1,3,5,...,201 (101) + surface 203 = 102
+    On crée une nouvelle variable GZ_momentum sur level4 (102 niveaux).
+    """
+    if "GZ" not in ds:
+        return ds
+
+    # Cette fonction doit être appelée AVANT reduce_px_gz_to_thermo()
+    # Vérifier si on a encore accès à level2
+    if "level2" in ds.dims and "GZ" in ds and "level2" in ds["GZ"].dims:
+        # GZ est encore sur level2 (204 niveaux)
+        # Extraire les niveaux momentum: indices impairs 1,3,5,...,201 + surface 203
+        momentum_idx = list(range(1, 202, 2)) + [203]  # 101 + 1 = 102 indices
+
+        # Créer GZ_momentum sur level4
+        ds["GZ_momentum"] = ds["GZ"].rename({"level2": "level4"}).isel(level4=momentum_idx)
+
+    return ds
+
+
 def make_gz_height_above_surface(ds: xr.Dataset) -> xr.Dataset:
     """Transforme GZ en hauteur relative à la surface (GZ_surface = 0)."""
     if "GZ" not in ds or "level1" not in ds["GZ"].dims:
@@ -187,24 +239,34 @@ def make_gz_height_above_surface(ds: xr.Dataset) -> xr.Dataset:
 
     gz_surface = ds["GZ"].isel(level1=-1)
     ds["GZ"] = ds["GZ"] - gz_surface
+
+    # Faire la même chose pour GZ_momentum si présent
+    if "GZ_momentum" in ds and "level4" in ds["GZ_momentum"].dims:
+        # Pour momentum, la surface est au même niveau que pour thermo
+        # On utilise donc le même gz_surface
+        ds["GZ_momentum"] = ds["GZ_momentum"] - gz_surface
+
     return ds
 
 
 def interp_along_column(data_col, z_col, z_new):
-    """Interpole une colonne de données sur une nouvelle grille verticale."""
-    # Trier par altitude croissante
-    order = np.argsort(z_col)
-    z_col_sorted = z_col[order]
-    data_col_sorted = data_col[order]
+    """
+    Interpole une colonne de données sur une nouvelle grille verticale.
+    Optimisé: suppose que z_col est déjà trié (ordre pré-calculé).
+    """
+    # Si z_col n'est pas trié, le trier
+    if not np.all(z_col[:-1] <= z_col[1:]):
+        order = np.argsort(z_col)
+        z_col = z_col[order]
+        data_col = data_col[order]
 
-    # Interpolation linéaire
-    return np.interp(z_new, z_col_sorted, data_col_sorted,
-                     left=data_col_sorted[0], right=data_col_sorted[-1])
+    # Interpolation linéaire (np.interp est très optimisé en C)
+    return np.interp(z_new, z_col, data_col, left=data_col[0], right=data_col[-1])
 
 
 def interpolate_to_common_grid(ds: xr.Dataset, var_name: str, gz_mean: xr.DataArray) -> xr.DataArray | None:
     """
-    Interpole une variable 3D sur la grille verticale commune (GZ moyen lat/lon).
+    Interpole une variable 3D thermodynamique sur la grille verticale commune (GZ moyen lat/lon).
     Méthode validée avec Paraview.
     """
     if var_name not in ds or 'level1' not in ds[var_name].dims:
@@ -213,7 +275,7 @@ def interpolate_to_common_grid(ds: xr.Dataset, var_name: str, gz_mean: xr.DataAr
     var_data = ds.variables[var_name][:]
     var_gz = ds.variables['GZ'][:]
 
-    # Interpolation vectorisée sur toutes les colonnes
+    # Interpolation vectorisée sur toutes les colonnes avec dask
     var_interp = xr.apply_ufunc(
         interp_along_column,
         var_data,
@@ -223,11 +285,43 @@ def interpolate_to_common_grid(ds: xr.Dataset, var_name: str, gz_mean: xr.DataAr
         output_core_dims=[['level1']],
         vectorize=True,
         dask='parallelized',
-        output_dtypes=[var_data.dtype],
+        output_dtypes=[np.float32],
     )
 
     # Réorganise: (time, level1, lat, lon)
     return var_interp.transpose("time", "level1", "lat", "lon")
+
+
+def interpolate_momentum_to_common_grid(ds: xr.Dataset, var_name: str,
+                                        gz_mean_momentum: xr.DataArray) -> xr.DataArray | None:
+    """
+    Interpole une variable 3D momentum sur la grille verticale commune momentum (GZ_momentum moyen lat/lon).
+    Même principe que pour les variables thermodynamiques, mais sur level4 (102 niveaux).
+    """
+    if var_name not in ds or 'level4' not in ds[var_name].dims:
+        return None
+
+    if 'GZ_momentum' not in ds:
+        return None
+
+    var_data = ds.variables[var_name][:]
+    var_gz = ds.variables['GZ_momentum'][:]
+
+    # Interpolation vectorisée sur toutes les colonnes avec dask
+    var_interp = xr.apply_ufunc(
+        interp_along_column,
+        var_data,
+        var_gz,
+        gz_mean_momentum,
+        input_core_dims=[['level4'], ['level4'], ['level4']],
+        output_core_dims=[['level4']],
+        vectorize=True,
+        dask='parallelized',
+        output_dtypes=[np.float32],
+    )
+
+    # Réorganise: (time, level4, lat, lon)
+    return var_interp.transpose("time", "level4", "lat", "lon")
 
 
 def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
@@ -239,11 +333,19 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
     if 'GZ' not in ds.variables:
         raise ValueError("GZ variable required for altitude grid")
 
-    # Calcul de la grille verticale moyenne
+    # Calcul de la grille verticale moyenne (thermodynamique)
     gz_mean = ds.variables['GZ'][:].mean(dim=['lat', 'lon'])
 
     if gz_mean.shape[1] != NLEVT:
         raise ValueError(f"Expected {NLEVT} vertical levels, got {gz_mean.shape[1]}")
+
+    # Calcul de la grille verticale moyenne (momentum) si UU ou VV présents
+    gz_mean_momentum = None
+    if ('UU' in ds or 'VV' in ds) and 'GZ_momentum' in ds:
+        gz_mean_momentum = ds.variables['GZ_momentum'][:].mean(dim=['lat', 'lon'])
+
+        if gz_mean_momentum.shape[1] != NLEVM:
+            raise ValueError(f"Expected {NLEVM} momentum levels, got {gz_mean_momentum.shape[1]}")
 
     # Création du fichier
     with Dataset(out_path, mode='w', format='NETCDF4') as ncfile:
@@ -253,6 +355,10 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
         ncfile.createDimension('lon', NLON)
         ncfile.createDimension('time', None)  # unlimited
         ncfile.createDimension('altitudeT', NLEVT)
+
+        # Dimension momentum si nécessaire
+        if gz_mean_momentum is not None:
+            ncfile.createDimension('altitudeM', NLEVM)
 
         # === ATTRIBUTS GLOBAUX ===
         ncfile.title = 'GEM-Mars simulation output'
@@ -282,25 +388,35 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
         lon_var[:] = lon_values
         lon_var.comment = f'Model grid: {lon_values[0]:.1f} to {lon_values[-1]:.1f} degrees'
 
-        # Temps
-        time_var = ncfile.createVariable('time', np.float64, ('time',))
-        time_var.units = 'hours since 0001-01-01 00:00:00'
+        # Temps - utiliser référence CF standard
+        time_var = ncfile.createVariable('time', np.float32, ('time',))
+        time_var.units = 'hours since 1970-01-01 00:00:00'
         time_var.long_name = 'time'
         time_var.standard_name = 'time'
         time_var.calendar = 'proleptic_gregorian'
 
+        # Convertir datetime64 en heures depuis epoch 1970
         time_data = ds.variables['time'][:]
-        time_ref = np.datetime64('0001-01-01T00:00:00')
-        time_hours = (time_data - time_ref) / np.timedelta64(1, 'h')
-        time_var[:] = time_hours
+        time_ref = np.datetime64('1970-01-01T00:00:00', 'ns')
+        time_hours = (time_data.astype('datetime64[ns]') - time_ref) / np.timedelta64(1, 'h')
+        time_var[:] = time_hours.astype(np.float32)
 
-        # Altitude (thermodynamique)
-        alt_var = ncfile.createVariable('altitudeT', np.float64, ('altitudeT',))
+        # Altitude (thermodynamique) - float32 pour économiser de l'espace
+        alt_var = ncfile.createVariable('altitudeT', np.float32, ('altitudeT',))
         alt_var.units = 'km'
         alt_var.long_name = 'Altitude on thermodynamic levels'
         alt_var.positive = 'up'
         alt_var.comment = 'Height above surface, averaged over lat/lon'
-        alt_var[:] = gz_mean.values / 1000.0  # m → km
+        alt_var[:] = (gz_mean.values / 1000.0).astype(np.float32)  # m → km
+
+        # Altitude (momentum) - float32 pour économiser de l'espace
+        if gz_mean_momentum is not None:
+            altM_var = ncfile.createVariable('altitudeM', np.float32, ('altitudeM',))
+            altM_var.units = 'km'
+            altM_var.long_name = 'Altitude on momentum levels'
+            altM_var.positive = 'up'
+            altM_var.comment = 'Height above surface, averaged over lat/lon'
+            altM_var[:] = (gz_mean_momentum.values / 1000.0).astype(np.float32)  # m → km
 
         # === VARIABLES DE DONNÉES ===
 
@@ -312,9 +428,22 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
 
             try:
                 is_3d = len(dims) == 4
+                is_momentum = 'altitudeM' in dims  # Variables UU/VV
 
-                if is_3d:
-                    # Variable 3D: interpolation verticale
+                if is_3d and is_momentum:
+                    # Variable 3D momentum: interpolation sur grille momentum
+                    if gz_mean_momentum is None:
+                        variables_skipped.append(f"{var_name} (no momentum grid)")
+                        continue
+
+                    data_interp = interpolate_momentum_to_common_grid(ds, var_name, gz_mean_momentum)
+                    if data_interp is None:
+                        variables_skipped.append(var_name)
+                        continue
+                    data = data_interp.values
+
+                elif is_3d:
+                    # Variable 3D thermodynamique: interpolation verticale
                     data_interp = interpolate_to_common_grid(ds, var_name, gz_mean)
                     if data_interp is None:
                         variables_skipped.append(var_name)
@@ -324,10 +453,10 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
                     # Variable 2D: pas d'interpolation
                     data = ds.variables[var_name][:].values
 
-                # Création variable avec compression
-                var = ncfile.createVariable(nc_name, np.float64, dims,
-                                            zlib=True, complevel=4, shuffle=True)
-                var[:] = data
+                # Création variable avec compression agressive (float32 + complevel=6)
+                var = ncfile.createVariable(nc_name, np.float32, dims,
+                                            zlib=True, complevel=6, shuffle=True)
+                var[:] = data.astype(np.float32)
 
                 # Attributs
                 var.units = units
@@ -352,6 +481,13 @@ def convert_one(dm_path: Path, pm_path: Path | None, out_path: Path, vars_keep: 
     # 2. Prétraitement
     ds = add_time_coordinate(ds)
     ds = convert_units(ds)
+
+    # CRITICAL: Renommer level3 → level4 pour UU/VV
+    ds = rename_momentum_levels(ds)
+
+    # IMPORTANT: Extraire GZ_momentum AVANT de réduire GZ à level1
+    ds = extract_gz_momentum(ds)
+
     ds = reduce_px_gz_to_thermo(ds)
     ds = make_gz_height_above_surface(ds)
 
@@ -379,7 +515,7 @@ def pm_for_dm(dm_file: Path, pm_subdir: Path) -> Path | None:
 def build_out_name(dm_file: Path) -> str:
     """
     Construit le nom du fichier NetCDF de sortie.
-    Exemple: 'hl-b274_dm_000000p_ls000.0000' → 'hl-b274_000000p_ls000_0000.nc'
+    Exemple : 'hl-b274_dm_000000p_ls000.0000' → 'hl-b274_000000p_ls000_0000.nc'
     """
     extnum = dm_file.suffix.lstrip(".")
     stem = dm_file.stem.replace("_dm_", "_")
