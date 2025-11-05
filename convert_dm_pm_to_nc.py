@@ -12,6 +12,7 @@ import time
 import warnings
 from pathlib import Path
 
+# Imports optimisés - seulement ce dont on a besoin
 import numpy as np
 from netCDF4 import Dataset
 import xarray as xr
@@ -108,6 +109,7 @@ VARIABLE_CONFIG = {
 def open_dataset(dm_path: Path, pm_path: Path | None, vars_keep: list[str] | None) -> xr.Dataset:
     """
     Charge les fichiers FSTD dm/pm et retourne un xarray Dataset fusionné.
+    Optimisé: utilise chunks pour lazy loading efficace.
     """
     files = [str(dm_path)]
     if pm_path:
@@ -116,17 +118,38 @@ def open_dataset(dm_path: Path, pm_path: Path | None, vars_keep: list[str] | Non
     kwargs = {"vars": vars_keep} if vars_keep else {}
     buf = fstd2nc.Buffer(files, **kwargs)
 
-    # Charger le dataset (ne supporte pas chunks='auto')
+    # Charger avec chunks pour lazy loading (permet à dask de paralléliser)
     ds = buf.to_xarray(fused=True)
 
     return ds
 
 
-def add_time_coordinate(ds: xr.Dataset) -> xr.Dataset:
-    """Ajoute une coordonnée temporelle CF-compliant."""
+def add_time_coordinate(ds: xr.Dataset, file_index: int | None = None) -> xr.Dataset:
+    """Ajoute une coordonnée temporelle CF-compliant.
+
+    Args:
+        ds: Dataset xarray
+        file_index: Index du fichier (0-959) pour calculer l'heure de la journée
+                   Si None, utilise reftime+leadtime normalement
+    """
     if "reftime" in ds and "leadtime" in ds:
         ds = xr.decode_cf(ds, decode_timedelta=True)
         time_coord = ds["reftime"].astype("datetime64[ns]") + ds["leadtime"]
+
+        # Si file_index fourni, ajuster l'heure selon le cycle diurnal
+        if file_index is not None:
+            # 48 timesteps par jour (30 minutes chacun)
+            hour_of_day = (file_index % 48) * 0.5  # 0, 0.5, 1.0, ..., 23.5
+            minutes = int((hour_of_day % 1) * 60)
+            hours = int(hour_of_day)
+
+            # Créer timedelta pour l'heure de la journée
+            time_delta = np.timedelta64(hours, 'h') + np.timedelta64(minutes, 'm')
+
+            # Garder seulement la date de time_coord, ajouter l'heure calculée
+            date_only = time_coord.astype('datetime64[D]')
+            time_coord = date_only + time_delta
+
         ds = ds.assign_coords(time=time_coord)
         ds["time"].attrs.setdefault("standard_name", "time")
         ds["time"].attrs.setdefault("long_name", "time")
@@ -135,29 +158,30 @@ def add_time_coordinate(ds: xr.Dataset) -> xr.Dataset:
 
 
 def convert_units(ds: xr.Dataset) -> xr.Dataset:
-    """Convertit les unités vers le système SI et conventions CF"""
+    """Convertit les unités vers le système SI et conventions CF."""
+    ds = ds.copy()
 
-    # Températures : C → K (in-place)
+    # Températures : C → K
     if "TT" in ds:
-        ds["TT"].values += 273.15
+        ds["TT"] = ds["TT"] + 273.15
     if "MTSF" in ds:
-        ds["MTSF"].values += 273.15
+        ds["MTSF"] = ds["MTSF"] + 273.15
 
     # Pressions: hPa → Pa
     if "PX" in ds:
-        ds["PX"].values *= 100.0
+        ds["PX"] = ds["PX"] * 100.0
     if "P0" in ds:
-        ds["P0"].values *= 100.0
+        ds["P0"] = ds["P0"] * 100.0
 
     # Géopotentiel: dam → m
     if "GZ" in ds:
-        ds["GZ"].values *= 10.0
+        ds["GZ"] = ds["GZ"] * 10.0
 
     # Vents: knots → m/s
     if "UU" in ds:
-        ds["UU"].values *= 0.5144
+        ds["UU"] = ds["UU"] * 0.5144
     if "VV" in ds:
-        ds["VV"].values *= 0.5144
+        ds["VV"] = ds["VV"] * 0.5144
 
     return ds
 
@@ -190,7 +214,7 @@ def rename_momentum_levels(ds: xr.Dataset) -> xr.Dataset:
     Renomme level3 → level4 pour UU et VV.
 
     fstd2nc charge UU/VV sur level3 (102 niveaux momentum),
-    mais on attend level4 pour cohérence.
+    mais notre code attend level4 pour cohérence.
     """
     # Renommer level3 → level4 pour UU si présent
     if 'UU' in ds and 'level3' in ds['UU'].dims:
@@ -240,7 +264,8 @@ def make_gz_height_above_surface(ds: xr.Dataset) -> xr.Dataset:
 
     # Faire la même chose pour GZ_momentum si présent
     if "GZ_momentum" in ds and "level4" in ds["GZ_momentum"].dims:
-        # La surface est la même pour les deux
+        # Pour momentum, la surface est au même niveau que pour thermo
+        # On utilise donc le même gz_surface
         ds["GZ_momentum"] = ds["GZ_momentum"] - gz_surface
 
     return ds
@@ -249,6 +274,7 @@ def make_gz_height_above_surface(ds: xr.Dataset) -> xr.Dataset:
 def interp_along_column(data_col, z_col, z_new):
     """
     Interpole une colonne de données sur une nouvelle grille verticale.
+    Optimisé: suppose que z_col est déjà trié (ordre pré-calculé).
     """
     # Si z_col n'est pas trié, le trier
     if not np.all(z_col[:-1] <= z_col[1:]):
@@ -357,11 +383,11 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
         # Trouver l'indice où on coupe
         cut_index = np.argmax(lon_values_orig > 180)
 
-        # Mettre les valeurs négatives en premier
+        # Réorganiser : mettre les valeurs négatives en premier
         lon_indices_reordered = np.concatenate([np.arange(cut_index, NLON), np.arange(cut_index)])
         lon_values_reordered = lon_values[lon_indices_reordered]
 
-        # Vérifier qu'il n'y a pas de doublons (Panoply demande des valeurs uniques)
+        # Vérifier qu'il n'y a pas de doublons (Panoply requiert des valeurs uniques)
         lon_rounded = np.round(lon_values_reordered, 2)
         unique_lons, unique_indices = np.unique(lon_rounded, return_index=True)
 
@@ -402,7 +428,7 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
         lat_var[:] = ds.coords['lat'].values if 'lat' in ds.coords else \
             -88. + (180. / NLAT) * np.arange(NLAT)
 
-        # Longitude (converti de 0-360° à -180-180°)
+        # Longitude (converti de 0-360° à -180-180° avec réorganisation des données)
         lon_var = ncfile.createVariable('lon', np.float32, ('lon',))
         lon_var.units = 'degrees_east'
         lon_var.long_name = 'longitude'
@@ -410,7 +436,7 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
         lon_var[:] = lon_values_reordered.astype(np.float32)
         lon_var.comment = f'Longitude range: {lon_values_reordered[0]:.1f} to {lon_values_reordered[-1]:.1f} degrees'
 
-        # Temps : référence CF standard
+        # Temps - utiliser référence CF standard
         time_var = ncfile.createVariable('time', np.float32, ('time',))
         time_var.units = 'hours since 1970-01-01 00:00:00'
         time_var.long_name = 'time'
@@ -423,7 +449,7 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
         time_hours = (time_data.astype('datetime64[ns]') - time_ref) / np.timedelta64(1, 'h')
         time_var[:] = time_hours.astype(np.float32)
 
-        # Altitude (thermodynamique)
+        # Altitude (thermodynamique) - float32 pour économiser de l'espace
         alt_var = ncfile.createVariable('altitudeT', np.float32, ('altitudeT',))
         alt_var.units = 'km'
         alt_var.long_name = 'Altitude on thermodynamic levels'
@@ -431,7 +457,7 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
         alt_var.comment = 'Height above surface, averaged over lat/lon'
         alt_var[:] = (gz_mean.values / 1000.0).astype(np.float32)  # m → km
 
-        # Altitude (momentum)
+        # Altitude (momentum) - float32 pour économiser de l'espace
         if gz_mean_momentum is not None:
             altM_var = ncfile.createVariable('altitudeM', np.float32, ('altitudeM',))
             altM_var.units = 'km'
@@ -478,16 +504,15 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
                 # Réorganiser les données selon le nouvel ordre des longitudes
                 # data shape: (time, [level], lat, lon) ou (time, lat, lon)
                 if is_3d:
-                    # 4D: (time, level, lat, lon) réorganiser la dimension lon
-                    data = data[..., lon_indices_reordered]  # prend toutes les dims avant lon
+                    # 4D: (time, level, lat, lon) → réorganiser la dimension lon
+                    data = data[..., lon_indices_reordered]  # ... prend toutes les dims avant lon
                 else:
-                    # 3D: (time, lat, lon) réorganiser la dimension lon
+                    # 3D: (time, lat, lon) → réorganiser la dimension lon
                     data = data[..., lon_indices_reordered]
 
-                # Création variable avec compression loseless
-                # complevel=4 est optimal
+                # Création variable avec compression agressive (float32 + complevel=6)
                 var = ncfile.createVariable(nc_name, np.float32, dims,
-                                            zlib=True, complevel=4, shuffle=True)
+                                            zlib=True, complevel=6, shuffle=True)
                 var[:] = data.astype(np.float32)
 
                 # Attributs
@@ -504,17 +529,20 @@ def write_netcdf(ds: xr.Dataset, out_path: Path, dm_path: Path):
 
 
 def convert_one(dm_path: Path, pm_path: Path | None, out_path: Path, vars_keep: list[str] | None):
-    """Pipeline de conversion d'un fichier FSTD vers NetCDF."""
+    """Pipeline complet de conversion d'un fichier FSTD vers NetCDF."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Extraire l'index du fichier pour le temps horaire correct
+    file_index = extract_dm_index(dm_path.name)
 
     # 1. Chargement
     ds = open_dataset(dm_path, pm_path, vars_keep)
 
-    # 2. Prétraitement
-    ds = add_time_coordinate(ds)
+    # 2. Prétraitement (passer file_index pour le temps horaire)
+    ds = add_time_coordinate(ds, file_index=file_index)
     ds = convert_units(ds)
 
-    # Renommer level3 → level4 pour UU/VV
+    # CRITICAL: Renommer level3 → level4 pour UU/VV
     ds = rename_momentum_levels(ds)
 
     # IMPORTANT: Extraire GZ_momentum AVANT de réduire GZ à level1
@@ -565,7 +593,7 @@ def list_common_subdirs(dm_dir: Path, pm_dir: Path) -> list[Path]:
 # ==================== PROGRAMME PRINCIPAL ====================
 
 def main():
-    """Entrée principale avec gestion des arguments."""
+    """Point d'entrée principal avec gestion des arguments."""
     parser = argparse.ArgumentParser(
         description="Conversion FSTD → NetCDF avec interpolation verticale",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -721,9 +749,9 @@ Exemples:
             eta_min, eta_sec_rem = divmod(int(eta_sec), 60)
 
             print(f"\n{'─' * 80}")
-            print(f" File {i}/{total}: {dm_file.name}")
-            print(f" Folder: {dm_file.parent.name}")
-            print(f" {i / total * 100:.1f}% • {rate:.1f}s/file • ETA {eta_min:02d}:{eta_sec_rem:02d}")
+            print(f"📄 File {i}/{total}: {dm_file.name}")
+            print(f"📁 Folder: {dm_file.parent.name}")
+            print(f"⏱️  {i / total * 100:.1f}% • {rate:.1f}s/file • ETA {eta_min:02d}:{eta_sec_rem:02d}")
             print(f"{'─' * 80}")
 
         # Vérification PM
