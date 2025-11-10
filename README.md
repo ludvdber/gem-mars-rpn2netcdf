@@ -200,3 +200,230 @@ Missing pm counterpart → file is SKIPped; check ```pm/<SUBDIR>/``` has the sam
 Permissions / disk → ensure netcdf/ is writable and has enough space.
 
 Linux build errors for netCDF4/HDF5 → install system dev libraries (see Install).
+
+---
+
+## Computing Diurnal Mean Cycles
+
+After converting RPN files to NetCDF, you can compute mean diurnal cycles (averaged over N Martian sols) using `compute_diurnal_mean.py`.
+
+### What it does
+
+- Groups NetCDF files by hour of day (48 timesteps: 0.0h, 0.5h, ..., 23.5h)
+- Averages each hour across multiple Martian days
+- Outputs one file with 48 timesteps representing a typical 24-hour cycle
+- Uses optimized numba JIT compilation for fast processing
+- Preserves all variables and metadata
+
+### Installation
+
+Requires `numba` in addition to previous dependencies:
+```bash
+pip install numba
+```
+
+### Basic Usage
+
+**1. Single directory, N days:**
+```bash
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --dir 000960 \
+  --n-days 5
+```
+
+**2. All directories, 10 days each:**
+```bash
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --all \
+  --n-days 10
+```
+
+**3. Range of directories:**
+```bash
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --dir-range 000960 003840 \
+  --n-days 20
+```
+
+### Advanced Options
+
+#### Limit number of means (`--max-means`)
+
+Create only the first N means (useful for testing or limiting output):
+
+```bash
+# Create only 5 means of 5 days each (= 25 days total)
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --dir 000960 \
+  --n-days 5 \
+  --max-means 5
+```
+
+**Output:** 5 files (sols 0-4, 5-9, 10-14, 15-19, 20-24)
+
+#### Filter by Ls range (`--ls-range`)
+
+Process only files within a specific solar longitude (Ls) range:
+
+```bash
+# Only process Ls 0 to 15°
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --all \
+  --n-days 10 \
+  --ls-range 0 15
+```
+
+#### Cross-directory mode (`--cross-dirs`)
+
+Allow means to span across multiple directories (treats all selected directories as one continuous dataset):
+
+```bash
+# 30-day means that can span across directory boundaries
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --dir-range 000960 001920 \
+  --n-days 30 \
+  --cross-dirs
+```
+
+**Without `--cross-dirs`:** Each directory processed separately  
+**With `--cross-dirs`:** All files treated as continuous timeline
+
+**Output location:** `netcdf_mean/cross_dirs/`
+
+#### Single mean mode (`--single-mean`)
+
+Create ONE single mean from ALL files in the specified range (ignores `--n-days` and `--max-means`):
+
+```bash
+# Create one mean Ls 0 to 90°
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --all \
+  --ls-range 0 90 \
+  --single-mean
+```
+
+**Output:** One file  
+**Output location:** `netcdf_mean/single_mean/`
+
+### Combined Examples
+
+**Example 1: First directory complete + 5 days from second**
+```bash
+# Process first directory completely
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --dir 000960 \
+  --n-days 5
+
+# Process only first mean (5 days) from second directory
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --dir 001920 \
+  --n-days 5 \
+  --max-means 1
+```
+
+**Example 2: Seasonal mean cycles**
+```bash
+# Create representative cycle for each season
+for season in "0 90" "90 180" "180 270" "270 360"; do
+  python compute_diurnal_mean.py \
+    --netcdf "$ROOT/netcdf" \
+    --output "$ROOT/netcdf_mean" \
+    --all \
+    --ls-range $season \
+    --single-mean
+done
+```
+
+**Example 3: Cross-directory with filters**
+```bash
+# 5 means of 5 days, only Ls 0-30°, spanning multiple directories
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --dir-range 000960 003840 \
+  --n-days 5 \
+  --max-means 5 \
+  --ls-range 0 30 \
+  --cross-dirs
+```
+
+### Output naming
+
+**Standard mode:**
+```
+Input:  netcdf/000960/hl-b274_000000p_ls000_0000.nc
+Output: netcdf_mean/000960/hl-b274_000000p_ls000_0000_sol000to004_5days_mean.nc
+```
+
+**Cross-directory mode:**
+```
+Output: netcdf_mean/cross_dirs/hl-b274_000000p_ls000_0000_sol000to029_30days_mean_crossdir.nc
+```
+
+**Single mean mode:**
+```
+Output: netcdf_mean/single_mean/hl-b274_000000p_ls000_0000_to_ls090_0000_sol000to500_501days_single_mean.nc
+```
+
+The filename includes:
+- Starting file index (`000000p`)
+- Ls range (`ls000_0000` or `ls000_0000_to_ls090_0000`)
+- Sol range (`sol000to004`)
+- Number of days averaged (`5days`)
+- Mode indicator (`mean`, `crossdir`, or `single_mean`)
+
+### Command Reference
+
+```
+usage: compute_diurnal_mean.py --netcdf PATH --output PATH 
+                               (--dir DIR | --all | --dir-range START END)
+                               [--n-days N] [--max-means N] 
+                               [--ls-range MIN MAX] [--cross-dirs] [--single-mean]
+
+Required arguments:
+  --netcdf PATH          Root directory containing NetCDF subdirs
+  --output PATH          Output directory for mean files
+  
+Directory selection (one required):
+  --dir DIR              Process single subdirectory
+  --all                  Process all subdirectories
+  --dir-range START END  Process range of subdirectories
+
+Optional arguments:
+  --n-days N            Number of days to average per mean (default: 1)
+                        Ignored with --single-mean
+  --max-means N         Maximum number of means to compute (default: all)
+                        Ignored with --single-mean
+  --ls-range MIN MAX    Filter files by Ls range (e.g., --ls-range 0 15)
+                        Example: 0 90 for spring, 90 180 for summer
+  --cross-dirs          Allow means to span across directories
+                        Treats all selected directories as continuous dataset
+  --single-mean         Create ONE mean from ALL files in range
+                        Useful for seasonal/period averages
+```
+
+### Help
+
+For full help including examples:
+```bash
+python compute_diurnal_mean.py --help
+```
+
