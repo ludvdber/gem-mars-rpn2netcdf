@@ -164,8 +164,6 @@ def convert_units(ds: xr.Dataset) -> xr.Dataset:
     # Températures : C → K
     if "TT" in ds:
         ds["TT"] = ds["TT"] + 273.15
-    if "MTSF" in ds:
-        ds["MTSF"] = ds["MTSF"] + 273.15
 
     # Pressions: hPa → Pa
     if "PX" in ds:
