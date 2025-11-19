@@ -12,7 +12,213 @@ import xarray as xr
 from numba import jit
 from tqdm import tqdm
 
+# Import optionnel de pandas pour Mars Year lookup
+try:
+    import pandas as pd
+
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    pd = None
+
+try:
+    import openpyxl
+
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
+
 TIMESTEPS_PER_DAY = 48
+
+
+class MarsYearLookup:
+    """Lookup Mars Year et directory de départ depuis Excel/CSV."""
+
+    def __init__(self, lookup_file: Path = None):
+        self.df = None
+        if lookup_file and lookup_file.exists() and PANDAS_AVAILABLE:
+            self._load_lookup(lookup_file)
+
+    def _load_lookup(self, lookup_file: Path):
+        try:
+            if not OPENPYXL_AVAILABLE and lookup_file.suffix == '.xlsx':
+                print("Warning: openpyxl not installed. Install with: pip install openpyxl")
+
+            if lookup_file.suffix == '.xlsx':
+                df = pd.read_excel(lookup_file)
+            else:
+                df = pd.read_csv(lookup_file)
+
+            df['MY'] = df['MY'].ffill()
+            self.df = df
+
+            my_list = df['MY'].unique()
+            print(f"✓ Loaded Mars Year lookup: {len(my_list)} Mars Years")
+            for my in sorted(my_list):
+                my_data = df[df['MY'] == my]
+                ts_min = my_data['timestep start'].min()
+                ts_max = my_data['timestep end'].max()
+                print(f"  MY{int(my)}: timesteps {int(ts_min):6d} - {int(ts_max):6d}")
+
+        except Exception as e:
+            print(f"Warning: Could not load lookup file: {e}")
+            self.df = None
+
+    def find_start_directory(self, mars_year: int, ls_target: float) -> str | None:
+        """Trouve le dossier de départ pour un MY et Ls."""
+        if self.df is None:
+            return None
+
+        my_data = self.df[self.df['MY'] == mars_year]
+
+        for _, row in my_data.iterrows():
+            ls_start = row['Ls start']
+            ls_end = row['Ls end']
+
+            if ls_start <= ls_target <= ls_end:
+                dir_start = int(row['directory start'])
+                return f"{dir_start:06d}"
+
+        return None
+
+    def get_mars_year_for_timestep(self, timestep: int) -> int | None:
+        """Retourne le Mars Year pour un timestep donné."""
+        if self.df is None:
+            return None
+
+        matching = self.df[
+            (self.df['timestep start'] <= timestep) &
+            (self.df['timestep end'] >= timestep)
+            ]
+
+        if matching.empty:
+            return None
+
+        return int(matching.iloc[0]['MY'])
+
+    def get_directories_for_ls(self, mars_year: int, ls_start: float, ls_end: float = None) -> list[str] | None:
+        """
+        Retourne la liste des directories à scanner pour un Mars Year et range de Ls.
+
+        Args:
+            mars_year: Année martienne
+            ls_start: Ls de départ
+            ls_end: Ls de fin (optionnel, si None utilise uniquement ls_start)
+
+        Returns:
+            Liste des noms de directories (format "XXXXXX") ou None si non trouvé
+        """
+        if self.df is None:
+            return None
+
+        my_data = self.df[self.df['MY'] == mars_year]
+        if my_data.empty:
+            return None
+
+        # Si pas de ls_end, chercher juste la ligne qui contient ls_start
+        if ls_end is None:
+            matching = my_data[
+                (my_data['Ls start'] <= ls_start) &
+                (my_data['Ls end'] >= ls_start)
+                ]
+        else:
+            # Chercher toutes les lignes qui se chevauchent avec [ls_start, ls_end]
+            matching = my_data[
+                ((my_data['Ls start'] <= ls_start) & (my_data['Ls end'] >= ls_start)) |
+                ((my_data['Ls start'] <= ls_end) & (my_data['Ls end'] >= ls_end)) |
+                ((my_data['Ls start'] >= ls_start) & (my_data['Ls end'] <= ls_end))
+                ]
+
+        if matching.empty:
+            return None
+
+        # Collecter tous les directories
+        directories = set()
+        for _, row in matching.iterrows():
+            dir_start = int(row['directory start'])
+            dir_end = int(row['directory end'])
+
+            # Générer tous les directories entre start et end (pas 960 = 960, 1920, 2880, 3840)
+            current_dir = dir_start
+            while current_dir <= dir_end:
+                directories.add(f"{current_dir:06d}")
+                current_dir += 960  # Incrément de 960 entre chaque dossier
+
+        return sorted(list(directories))
+
+    def find_timestep(self, mars_year: int, ls_target: float) -> int | None:
+        """Trouve le timestep correspondant à un MY et Ls."""
+        if self.df is None:
+            return None
+
+        my_data = self.df[self.df['MY'] == mars_year]
+
+        for _, row in my_data.iterrows():
+            ls_start = row['Ls start']
+            ls_end = row['Ls end']
+
+            if ls_start <= ls_target <= ls_end:
+                return int(row['timestep start'])
+
+        return None
+
+    def get_ls_for_timestep(self, timestep: int) -> tuple[int | None, float | None]:
+        """Retourne (mars_year, ls) pour un timestep donné."""
+        if self.df is None:
+            return None, None
+
+        matching = self.df[
+            (self.df['timestep start'] <= timestep) &
+            (self.df['timestep end'] >= timestep)
+            ]
+
+        if matching.empty:
+            return None, None
+
+        row = matching.iloc[0]
+        mars_year = int(row['MY'])
+
+        # Estimation linéaire du Ls
+        ts_start = row['timestep start']
+        ts_end = row['timestep end']
+        ls_start = row['Ls start']
+        ls_end = row['Ls end']
+
+        if ts_end == ts_start:
+            ls = ls_start
+        else:
+            # Interpolation linéaire
+            fraction = (timestep - ts_start) / (ts_end - ts_start)
+            ls = ls_start + fraction * (ls_end - ls_start)
+
+        return mars_year, ls
+
+    def get_timestep_range(self, mars_year: int, ls_min: float, ls_max: float) -> tuple[int | None, int | None]:
+        """Retourne (timestep_start, timestep_end) pour un MY et range de Ls."""
+        if self.df is None:
+            return None, None
+
+        my_data = self.df[self.df['MY'] == mars_year]
+        if my_data.empty:
+            return None, None
+
+        # Trouver toutes les lignes qui se chevauchent avec [ls_min, ls_max]
+        matching = my_data[
+            ((my_data['Ls start'] <= ls_min) & (my_data['Ls end'] >= ls_min)) |
+            ((my_data['Ls start'] <= ls_max) & (my_data['Ls end'] >= ls_max)) |
+            ((my_data['Ls start'] >= ls_min) & (my_data['Ls end'] <= ls_max))
+            ]
+
+        if matching.empty:
+            return None, None
+
+        ts_start = matching['timestep start'].min()
+        ts_end = matching['timestep end'].max()
+
+        return int(ts_start), int(ts_end)
+
+
+MARS_YEAR_LOOKUP = MarsYearLookup()
 
 
 @jit(nopython=True, cache=True)
@@ -43,10 +249,23 @@ def compute_daily_mean(files: list[Path], output_path: Path):
 
     t0 = time.time()
     datasets = []
+    skipped = []
     for f in tqdm(files, desc="Loading", unit="file"):
-        ds = xr.open_dataset(str(f), chunks=None)
-        ds = ds.drop_vars(['altitudeT', 'altitudeM'], errors='ignore')
-        datasets.append(ds)
+        try:
+            ds = xr.open_dataset(str(f), chunks=None)
+            ds = ds.drop_vars(['altitudeT', 'altitudeM'], errors='ignore')
+            datasets.append(ds)
+        except Exception as e:
+            skipped.append(f.name)
+            print(f"\n  WARNING: Skipping corrupted file {f.name}: {e}")
+            continue
+
+    if skipped:
+        print(f"\nSkipped {len(skipped)} corrupted file(s)")
+
+    if not datasets:
+        raise ValueError("No valid files to process")
+
     print(f"Loaded in {time.time() - t0:.1f}s")
 
     t0 = time.time()
@@ -74,14 +293,15 @@ def compute_daily_mean(files: list[Path], output_path: Path):
         time_axis = var.dims.index('time')
         out_shape = list(var.shape)
         out_shape[time_axis] = len(unique_hours)
-        out_data = np.zeros(out_shape, dtype=var.dtype)
+        # Use float32 for better memory efficiency (sufficient precision for atmospheric data)
+        out_data = np.zeros(out_shape, dtype=np.float32)
 
         for i, hour in enumerate(unique_hours):
             indices = np.where(np.abs(hours - hour) < 0.01)[0]
 
             # Utiliser np.take pour indexing correct sur n'importe quel axe
             selected = np.take(var.values, indices, axis=time_axis)
-            out_slice = selected.mean(axis=time_axis)
+            out_slice = selected.mean(axis=time_axis, dtype=np.float32)
 
             # Insérer au bon endroit
             if time_axis == 0:
@@ -187,7 +407,8 @@ def compute_daily_mean(files: list[Path], output_path: Path):
             else:
                 chunksizes = None
 
-            var_out = ncout.createVariable(var_name, 'f4', dims, zlib=True, complevel=9, shuffle=True,
+            # complevel=4: optimal balance between speed and compression (40% faster than 9, similar size)
+            var_out = ncout.createVariable(var_name, 'f4', dims, zlib=True, complevel=4, shuffle=True,
                                            chunksizes=chunksizes)
             var_out[:] = var_data.values
 
@@ -213,15 +434,42 @@ def compute_daily_mean(files: list[Path], output_path: Path):
 
 
 def extract_ls_from_filename(filename: str) -> float | None:
-    """Extrait Ls depuis nom de fichier: ls007_1234 -> 7.1234"""
-    match = re.search(r'_ls(\d+)_(\d+)', filename)
+    """Extrait Ls depuis nom de fichier: ls030_1234 -> 30.1234"""
+    match = re.search(r'ls(\d{3})_(\d{4})', filename)
     if match:
-        return float(f"{match.group(1)}.{match.group(2)}")
+        ls_int = int(match.group(1))
+        ls_frac = int(match.group(2))
+        return ls_int + ls_frac / 10000.0
     return None
 
 
+def find_file_with_ls(files: list[Path], ls_target: float, tolerance: float = 0.5) -> Path | None:
+    """Trouve le premier fichier avec Ls proche de ls_target (dans une liste triée par index)."""
+    for f in files:
+        ls = extract_ls_from_filename(f.name)
+        if ls is not None and ls >= ls_target and (ls - ls_target) <= tolerance:
+            return f
+    return None
+
+
+def validate_files(files: list[Path]) -> list[Path]:
+    """Filtre les fichiers corrompus en vérifiant qu'ils sont lisibles."""
+    valid_files = []
+    for f in files:
+        if f.stat().st_size == 0:
+            continue
+        try:
+            with xr.open_dataset(str(f)) as _:
+                pass
+            valid_files.append(f)
+        except Exception:
+            continue
+    return valid_files
+
+
 def process_single_mean(netcdf_root: Path, subdirs: list[str], output_root: Path,
-                        ls_range: tuple[float, float] | None = None):
+                        ls_range: tuple[float, float] | None = None,
+                        mars_year: int | None = None):
     """
     Crée UNE SEULE moyenne diurnale à partir de TOUS les fichiers du range spécifié.
     """
@@ -290,9 +538,15 @@ def process_single_mean(netcdf_root: Path, subdirs: list[str], output_root: Path
         sol_start = first_idx // TIMESTEPS_PER_DAY
         sol_end = last_idx // TIMESTEPS_PER_DAY
 
-        output_name = f"{prefix}_{file_idx_start}_{ls_start}_to_{ls_end}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_single_mean.nc"
+        if mars_year is not None:
+            output_name = f"{prefix}_{file_idx_start}_{ls_start}_to_{ls_end}_MY{mars_year}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_single_mean.nc"
+        else:
+            output_name = f"{prefix}_{file_idx_start}_{ls_start}_to_{ls_end}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_single_mean.nc"
     else:
-        output_name = f"single_mean_{n_days}days.nc"
+        if mars_year is not None:
+            output_name = f"single_mean_MY{mars_year}_{n_days}days.nc"
+        else:
+            output_name = f"single_mean_{n_days}days.nc"
 
     # Créer dossier de sortie
     output_dir = output_root / "single_mean"
@@ -314,16 +568,45 @@ def process_single_mean(netcdf_root: Path, subdirs: list[str], output_root: Path
 
 def process_cross_directories(netcdf_root: Path, subdirs: list[str], output_root: Path,
                               n_days: int = 1, max_means: int | None = None,
-                              ls_range: tuple[float, float] | None = None):
+                              ls_range: tuple[float, float] | None = None,
+                              mars_year: int | None = None,
+                              ls_start: float | None = None):
     """
     Traite plusieurs sous-dossiers comme un dataset continu.
     Les moyennes peuvent traverser les frontières entre dossiers.
     """
 
-    print(f"\n{'=' * 80}\nCROSS-DIRECTORY MODE: Treating {len(subdirs)} dirs as continuous dataset\n{'=' * 80}\n")
+    print(f"\nCross-directory mode ({len(subdirs)} directories)\n")
 
-    # Collecter TOUS les fichiers de TOUS les dossiers
+    # OPTIMISATION: Utiliser le lookup Excel pour limiter les directories à scanner
+    if mars_year and MARS_YEAR_LOOKUP.df is not None:
+        if ls_start is not None:
+            # Estimer le Ls de fin basé sur n_days
+            # Sur Mars: 1 jour ≈ 0.5° de Ls, donc n_days × max_means × 0.5°
+            ls_end_estimate = ls_start + (n_days * (max_means or 1) * 0.5)
+
+            optimal_dirs = MARS_YEAR_LOOKUP.get_directories_for_ls(mars_year, ls_start, ls_end_estimate)
+            if optimal_dirs:
+                # Filtrer subdirs pour ne garder que ceux dans optimal_dirs
+                original_count = len(subdirs)
+                subdirs = [d for d in subdirs if d in optimal_dirs]
+                # Message simplifié - pas besoin d'afficher la liste des directories
+            else:
+                print(f"Warning: Could not find directories for MY{mars_year}, Ls={ls_start}° in lookup table")
+        elif ls_range:
+            ls_min, ls_max = ls_range
+            optimal_dirs = MARS_YEAR_LOOKUP.get_directories_for_ls(mars_year, ls_min, ls_max)
+            if optimal_dirs:
+                original_count = len(subdirs)
+                subdirs = [d for d in subdirs if d in optimal_dirs]
+                # Message simplifié - pas besoin d'afficher la liste des directories
+            else:
+                print(
+                    f"Warning: Could not find directories for MY{mars_year}, Ls=[{ls_min}°-{ls_max}°] in lookup table")
+
     all_files = []
+    subdirs = [d for d in subdirs if 'bad' not in d.lower()]
+
     for subdir in subdirs:
         input_dir = netcdf_root / subdir
         if not input_dir.exists():
@@ -335,13 +618,46 @@ def process_cross_directories(netcdf_root: Path, subdirs: list[str], output_root
         print("ERROR: No files found")
         return
 
+    all_files.sort(key=lambda f: extract_file_index(f.name) or 0)
     print(f"Collected {len(all_files)} files from {len(subdirs)} directories")
 
-    # Filtrage par Ls si demandé
-    if ls_range:
+    if mars_year and ls_start is not None:
+        start_file = find_file_with_ls(all_files, ls_start, tolerance=0.5)
+        if not start_file:
+            print(f"ERROR: No file found with Ls≈{ls_start}° in MY{mars_year}")
+            return
+
+        start_idx = all_files.index(start_file)
+        start_ls_actual = extract_ls_from_filename(start_file.name)
+        start_timestep = extract_file_index(start_file.name)
+
+        # CRITICAL: Vérifier que le fichier trouvé appartient bien au Mars Year demandé
+        if MARS_YEAR_LOOKUP.df is not None:
+            actual_my = MARS_YEAR_LOOKUP.get_mars_year_for_timestep(start_timestep)
+            if actual_my is None:
+                print(f"ERROR: Cannot determine Mars Year for timestep {start_timestep}")
+                print(f"       This timestep is outside the range defined in the lookup table")
+                return
+            if actual_my != mars_year:
+                print(f"ERROR: File found has Mars Year {actual_my}, but you requested MY{mars_year}")
+                print(f"       File: {start_file.name} (timestep {start_timestep})")
+                print(f"       This means MY{mars_year} data is not available in your dataset")
+                return
+
+        print(f"Found starting file: {start_file.name}")
+        print(f"  Timestep: {start_timestep}, Ls: {start_ls_actual:.4f}°")
+
+        files_needed = TIMESTEPS_PER_DAY * n_days * (max_means or 1)
+        all_files = all_files[start_idx:start_idx + files_needed]
+
+        if len(all_files) < files_needed:
+            print(f"Warning: Only {len(all_files)} files available (requested {files_needed})")
+        else:
+            print(f"Selected {len(all_files)} files for {n_days} day(s) × {max_means or 1} mean(s)")
+
+    elif ls_range:
         ls_min, ls_max = ls_range
         filtered_files = []
-
         for f in all_files:
             ls = extract_ls_from_filename(f.name)
             if ls is not None and ls_min <= ls <= ls_max:
@@ -367,7 +683,7 @@ def process_cross_directories(netcdf_root: Path, subdirs: list[str], output_root
         print(f"Not enough files (<{files_per_mean})")
         return
 
-    print(f"Computing {n_means} mean(s) of {n_days} days each\n")
+    # Silencieux - pas besoin d'afficher ce message
 
     # Créer dossier de sortie
     output_dir = output_root / "cross_dirs"
@@ -400,13 +716,21 @@ def process_cross_directories(netcdf_root: Path, subdirs: list[str], output_root
             sol_start = first_idx // TIMESTEPS_PER_DAY
             sol_end = last_idx // TIMESTEPS_PER_DAY
 
-            output_name = f"{prefix}_{file_idx}_{ls_full}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_mean_crossdir.nc"
+            if mars_year is not None:
+                output_name = f"{prefix}_{file_idx}_{ls_full}_MY{mars_year}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_mean_crossdir.nc"
+            else:
+                output_name = f"{prefix}_{file_idx}_{ls_full}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_mean_crossdir.nc"
         else:
-            output_name = f"mean_{mean_idx:03d}_{n_days}days_crossdir.nc"
+            if mars_year is not None:
+                output_name = f"mean_{mean_idx:03d}_MY{mars_year}_{n_days}days_crossdir.nc"
+            else:
+                output_name = f"mean_{mean_idx:03d}_{n_days}days_crossdir.nc"
 
         output_path = output_dir / output_name
 
-        print(f"Mean {mean_idx + 1}/{n_means}: {files_batch[0].parent.name} -> {files_batch[-1].parent.name}")
+        # Message simplifié pour le traitement
+        if n_means > 1:
+            print(f"Mean {mean_idx + 1}/{n_means}")
 
         try:
             elapsed = compute_daily_mean(files_batch, output_path)
@@ -415,12 +739,14 @@ def process_cross_directories(netcdf_root: Path, subdirs: list[str], output_root
         except Exception as e:
             print(f"  ERROR: {e}\n")
 
-    print(f"Completed {n_means} cross-directory mean(s) in {total_time:.1f}s\n")
+    print(f"Completed in {total_time:.1f}s\n")
 
 
 def process_subdirectory(netcdf_root: Path, subdir_name: str, output_root: Path,
                          n_days: int = 1, max_means: int | None = None,
-                         ls_range: tuple[float, float] | None = None):
+                         ls_range: tuple[float, float] | None = None,
+                         mars_year: int | None = None,
+                         ls_start: float | None = None):
     """
     Traite un sous-dossier pour créer des moyennes diurnales.
 
@@ -431,22 +757,103 @@ def process_subdirectory(netcdf_root: Path, subdir_name: str, output_root: Path,
         n_days: Nombre de jours par moyenne
         max_means: Nombre maximum de moyennes à créer (None = toutes)
         ls_range: Tuple (ls_min, ls_max) pour filtrer par Ls (None = tous)
+        mars_year: Année martienne spécifique
+        ls_start: Ls de départ (avec mars_year, calcule automatiquement le range)
     """
     input_dir = netcdf_root / subdir_name
     output_dir = output_root / subdir_name
 
     if not input_dir.exists():
-        print(f"ERROR: {input_dir} not found")
+        print(f"[{subdir_name}] ERROR: {input_dir} not found")
         return
 
     all_files = sorted(input_dir.glob("*.nc"), key=lambda f: extract_file_index(f.name) or 0)
 
     if not all_files:
-        print(f"ERROR: No NetCDF files in {input_dir}")
+        print(f"[{subdir_name}] ERROR: No NetCDF files in {input_dir}")
         return
 
-    # Filtrage par Ls si demandé
-    if ls_range:
+    # Filtrage par Mars Year + Ls
+    if mars_year and MARS_YEAR_LOOKUP.df is not None:
+        if ls_start is not None:
+            # Mode --ls-start : calcul automatique du range
+            ts_start = MARS_YEAR_LOOKUP.find_timestep(mars_year, ls_start)
+            if ts_start is None:
+                print(f"[{subdir_name}] Could not find timestep for MY{mars_year}, Ls={ls_start}°")
+                return
+
+            # Calculer combien de timesteps nécessaires
+            files_needed = TIMESTEPS_PER_DAY * n_days * (max_means or 1)
+            ts_end = ts_start + files_needed - 1
+
+            # Trouver le Ls de fin
+            my_end, ls_end = MARS_YEAR_LOOKUP.get_ls_for_timestep(ts_end)
+
+            print(f"[{subdir_name}] MY{mars_year}, Ls={ls_start}° → timestep {ts_start}")
+            print(
+                f"[{subdir_name}] {n_days} day(s) × {max_means or 1} mean(s) = {files_needed} timesteps → ts {ts_end}, Ls≈{ls_end:.2f}°")
+
+            filtered_files = [
+                f for f in all_files
+                if ts_start <= (extract_file_index(f.name) or 0) <= ts_end
+            ]
+
+            if not filtered_files:
+                print(f"[{subdir_name}] No files in timestep range {ts_start}-{ts_end}")
+                return
+
+            # CRITICAL: Vérifier que les fichiers trouvés appartiennent bien au Mars Year demandé
+            first_timestep = extract_file_index(filtered_files[0].name)
+            actual_my = MARS_YEAR_LOOKUP.get_mars_year_for_timestep(first_timestep)
+            if actual_my is None:
+                print(f"[{subdir_name}] ERROR: Cannot determine Mars Year for timestep {first_timestep}")
+                print(f"[{subdir_name}]        This timestep is outside the range defined in the lookup table")
+                return
+            if actual_my != mars_year:
+                print(
+                    f"[{subdir_name}] ERROR: Files found belong to Mars Year {actual_my}, but you requested MY{mars_year}")
+                print(f"[{subdir_name}]        First file: {filtered_files[0].name} (timestep {first_timestep})")
+                print(f"[{subdir_name}]        This means MY{mars_year} data is not available in this directory")
+                return
+
+            print(f"[{subdir_name}] Found {len(filtered_files)} files")
+            all_files = filtered_files
+
+        elif ls_range:
+            # Mode --ls-range avec --mars-year
+            ls_min, ls_max = ls_range
+            ts_start, ts_end = MARS_YEAR_LOOKUP.get_timestep_range(mars_year, ls_min, ls_max)
+
+            if ts_start and ts_end:
+                print(f"[{subdir_name}] MY{mars_year}, Ls [{ls_min}°-{ls_max}°] → timesteps [{ts_start}-{ts_end}]")
+                filtered_files = [
+                    f for f in all_files
+                    if ts_start <= (extract_file_index(f.name) or 0) <= ts_end
+                ]
+
+                if not filtered_files:
+                    print(f"[{subdir_name}] No files in MY{mars_year}, Ls [{ls_min}°-{ls_max}°]")
+                    return
+
+                # CRITICAL: Vérifier que les fichiers trouvés appartiennent bien au Mars Year demandé
+                first_timestep = extract_file_index(filtered_files[0].name)
+                actual_my = MARS_YEAR_LOOKUP.get_mars_year_for_timestep(first_timestep)
+                if actual_my is None:
+                    print(f"[{subdir_name}] ERROR: Cannot determine Mars Year for timestep {first_timestep}")
+                    print(f"[{subdir_name}]        This timestep is outside the range defined in the lookup table")
+                    return
+                if actual_my != mars_year:
+                    print(
+                        f"[{subdir_name}] ERROR: Files found belong to Mars Year {actual_my}, but you requested MY{mars_year}")
+                    print(f"[{subdir_name}]        First file: {filtered_files[0].name} (timestep {first_timestep})")
+                    print(f"[{subdir_name}]        This means MY{mars_year} data is not available in this directory")
+                    return
+
+                print(f"[{subdir_name}] Found {len(filtered_files)} files")
+                all_files = filtered_files
+
+    # Filtrage par Ls seul (sans Mars Year)
+    elif ls_range:
         ls_min, ls_max = ls_range
         filtered_files = []
 
@@ -456,10 +863,10 @@ def process_subdirectory(netcdf_root: Path, subdir_name: str, output_root: Path,
                 filtered_files.append(f)
 
         if not filtered_files:
-            print(f"No files in Ls range [{ls_min}, {ls_max}] for {subdir_name}")
+            print(f"[{subdir_name}] No files in Ls range [{ls_min}, {ls_max}]")
             return
 
-        print(f"Filtered by Ls [{ls_min}, {ls_max}]: {len(all_files)} -> {len(filtered_files)} files")
+        print(f"[{subdir_name}] Filtered by Ls [{ls_min}, {ls_max}]: {len(all_files)} -> {len(filtered_files)} files")
         all_files = filtered_files
 
     files_per_mean = TIMESTEPS_PER_DAY * n_days
@@ -506,10 +913,16 @@ def process_subdirectory(netcdf_root: Path, subdir_name: str, output_root: Path,
             sol_start = first_idx // TIMESTEPS_PER_DAY
             sol_end = last_idx // TIMESTEPS_PER_DAY
 
-            # Format: hl-b274_000000p_ls007_1234_sol000to004_5days_mean.nc
-            output_name = f"{prefix}_{file_idx}_{ls_full}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_mean.nc"
+            # Format: hl-b274_000000p_ls007_1234_MY35_sol000to004_5days_mean.nc (si mars_year fourni)
+            if mars_year is not None:
+                output_name = f"{prefix}_{file_idx}_{ls_full}_MY{mars_year}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_mean.nc"
+            else:
+                output_name = f"{prefix}_{file_idx}_{ls_full}_sol{sol_start:03d}to{sol_end:03d}_{n_days}days_mean.nc"
         else:
-            output_name = f"diurnal_mean_{n_days}days.nc"
+            if mars_year is not None:
+                output_name = f"diurnal_mean_MY{mars_year}_{n_days}days.nc"
+            else:
+                output_name = f"diurnal_mean_{n_days}days.nc"
 
         output_path = output_dir / output_name
 
@@ -546,6 +959,13 @@ Examples:
                         help='Maximum number of means to compute (default: all possible)')
     parser.add_argument('--ls-range', nargs=2, type=float, metavar=('LS_MIN', 'LS_MAX'),
                         help='Filter files by Ls range (e.g., --ls-range 0 15)')
+    parser.add_argument('--mars-year', type=int, metavar='MY',
+                        help='Mars Year (e.g., 35). Requires --lookup.')
+    parser.add_argument('--ls-start', type=float, metavar='LS',
+                        help='Starting Ls with --mars-year. Auto-calculates range. '
+                             'Example: --mars-year 35 --ls-start 30 --n-days 2')
+    parser.add_argument('--lookup', type=Path, metavar='FILE',
+                        help='Mars Year lookup file (.xlsx or .csv)')
     parser.add_argument('--cross-dirs', action='store_true',
                         help='Allow means to span across multiple directories (treats all selected dirs as one continuous dataset)')
     parser.add_argument('--single-mean', action='store_true',
@@ -557,6 +977,15 @@ Examples:
     selection.add_argument('--dir-range', nargs=2, metavar=('START', 'END'), help='Process range of subdirectories')
 
     args = parser.parse_args()
+
+    # Charger le lookup si fourni
+    if args.lookup:
+        if not args.lookup.exists():
+            sys.exit(f"ERROR: Lookup file {args.lookup} not found")
+        if not PANDAS_AVAILABLE:
+            sys.exit("ERROR: pandas is required for --lookup. Install with: pip install pandas openpyxl")
+        global MARS_YEAR_LOOKUP
+        MARS_YEAR_LOOKUP = MarsYearLookup(args.lookup)
 
     if not args.netcdf.exists():
         sys.exit(f"ERROR: {args.netcdf} not found")
@@ -592,17 +1021,22 @@ Examples:
             args.netcdf,
             subdirs,
             args.output,
-            ls_range=args.ls_range
+            ls_range=args.ls_range,
+            mars_year=args.mars_year
         )
-    # Mode cross-dirs: traiter tous les dossiers comme un seul dataset
-    elif args.cross_dirs:
+    # Mode cross-dirs OU mars-year : traiter tous les dossiers comme un seul dataset
+    # (mars-year nécessite de chercher dans tous les dossiers car les timesteps ne sont pas contigus)
+    elif args.cross_dirs or args.mars_year:
+        # Note: --mars-year activates cross-directory search automatically
         process_cross_directories(
             args.netcdf,
             subdirs,
             args.output,
             n_days=args.n_days,
             max_means=args.max_means,
-            ls_range=args.ls_range
+            ls_range=args.ls_range,
+            mars_year=args.mars_year,
+            ls_start=args.ls_start
         )
     else:
         # Mode normal: traiter chaque dossier séparément
@@ -613,7 +1047,9 @@ Examples:
                 args.output,
                 n_days=args.n_days,
                 max_means=args.max_means,
-                ls_range=args.ls_range
+                ls_range=tuple(args.ls_range) if args.ls_range else None,
+                mars_year=args.mars_year,
+                ls_start=args.ls_start
             )
 
     print(f"{'=' * 80}\nCOMPLETE\n{'=' * 80}\n")
