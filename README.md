@@ -339,20 +339,7 @@ python compute_diurnal_mean.py \
   --max-means 1
 ```
 
-**Example 2: Seasonal mean cycles**
-```bash
-# Create representative cycle for each season
-for season in "0 90" "90 180" "180 270" "270 360"; do
-  python compute_diurnal_mean.py \
-    --netcdf "$ROOT/netcdf" \
-    --output "$ROOT/netcdf_mean" \
-    --all \
-    --ls-range $season \
-    --single-mean
-done
-```
-
-**Example 3: Cross-directory with filters**
+**Example 2: Cross-directory with filters**
 ```bash
 # 5 means of 5 days, only Ls 0-30°, spanning multiple directories
 python compute_diurnal_mean.py \
@@ -394,15 +381,16 @@ The filename includes:
 
 ```
 usage: compute_diurnal_mean.py --netcdf PATH --output PATH 
-                               (--dir DIR | --all | --dir-range START END)
+                               [--dir DIR | --all | --dir-range START END]
                                [--n-days N] [--max-means N] 
-                               [--ls-range MIN MAX] [--cross-dirs] [--single-mean]
+                               [--ls-range MIN MAX] [--mars-year MY] [--ls-start LS]
+                               [--lookup FILE] [--cross-dirs] [--single-mean]
 
 Required arguments:
   --netcdf PATH          Root directory containing NetCDF subdirs
   --output PATH          Output directory for mean files
   
-Directory selection (one required):
+Directory selection (required unless using --mars-year):
   --dir DIR              Process single subdirectory
   --all                  Process all subdirectories
   --dir-range START END  Process range of subdirectories
@@ -418,7 +406,73 @@ Optional arguments:
                         Treats all selected directories as continuous dataset
   --single-mean         Create ONE mean from ALL files in range
                         Useful for seasonal/period averages
+
+Mars Year arguments (advanced):
+  --mars-year MY        Mars Year number (e.g., 34, 35)
+                        Automatically enables cross-directory search
+                        Makes directory selection optional
+  --ls-start LS         Starting Ls for Mars Year mode (e.g., 9.61)
+  --lookup FILE         Mars Year lookup file (.xlsx or .csv)
+                        Required when using --mars-year
 ```
+
+### Mars Year Lookup (Advanced)
+
+Automatically find starting directories using Mars Year and Ls!
+
+**Simplified usage** - no need to specify `--all` when using `--mars-year`:
+
+```bash
+python compute_diurnal_mean.py \
+  --netcdf "$ROOT/netcdf" \
+  --output "$ROOT/netcdf_mean" \
+  --lookup Mars_year_Ls_timestep_list.xlsx \
+  --mars-year 34 \
+  --ls-start 9.61 \
+  --n-days 2 \
+  --max-means 1
+```
+
+**What it does:**
+- Reads Excel/CSV lookup table with Mars Year, Ls ranges, and directories
+- Automatically finds the starting directory for your Mars Year + Ls
+- **Automatically searches all directories** (no need for `--all`)
+- Computes means starting from that Ls
+- Adds `MY34` to output filename for easy identification
+
+**Requirements:**
+```bash
+pip install pandas openpyxl
+```
+
+**Lookup file format:**
+The lookup file should have columns:
+- `MY` - Mars Year (e.g., 34, 35)
+- `Ls start` - Starting Ls for this range
+- `Ls end` - Ending Ls for this range  
+- `timestep start` - First timestep in range
+- `timestep end` - Last timestep in range
+- `directory start` - Directory containing these timesteps
+
+**Mars Year parameters:**
+- `--mars-year MY` - Mars Year number (e.g., 34, 35) - **automatically enables cross-directory search**
+- `--ls-start LS` - Starting Ls (e.g., 9.61, 30.0)
+- `--lookup FILE` - Path to Excel (.xlsx) or CSV lookup file (required with --mars-year)
+
+**Example outputs:**
+```
+# Without Mars Year
+hl-b274_000000p_ls007_1234_sol000to004_5days_mean.nc
+
+# With Mars Year
+hl-b274_000000p_ls007_1234_MY34_sol000to004_5days_mean.nc
+```
+
+**Notes:**
+- `--mars-year` automatically enables cross-directory search (searches all directories for matching timesteps)
+- Can combine with `--max-means` to limit output
+- Can combine with `--ls-range` for additional filtering
+- `--lookup` is required when using `--mars-year`
 
 ### Help
 
@@ -426,4 +480,3 @@ For full help including examples:
 ```bash
 python compute_diurnal_mean.py --help
 ```
-
