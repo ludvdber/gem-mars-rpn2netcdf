@@ -2,7 +2,33 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![CF Conventions](https://img.shields.io/badge/CF-1.10-orange.svg)
 ![Status](https://img.shields.io/badge/status-production-brightgreen.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg)
+![NetCDF](https://img.shields.io/badge/format-NetCDF--4-blue.svg)
+![Mars](https://img.shields.io/badge/planet-Mars-red.svg)
 
+**CLI tools for GEM-Mars atmospheric model:** Convert RPN/FSTD files to CF-compliant NetCDF-4 + compute diurnal mean cycles with Mars Year/Ls indexing.
+
+
+## 📑 Table of Contents
+
+- [convert_dm_pm_to_nc.py](#convert_dm_pm_to_nc--readme)
+  - [What it does](#what-it-does-default-behavior)
+  - [Folder layout](#folder-layout-expected)
+  - [Installation](#installation)
+  - [Usage](#usage)
+  - [Selecting variables](#selecting-variables)
+  - [Output & logging](#output--logging)
+  - [Troubleshooting](#troubleshooting)
+- [compute_diurnal_mean.py](#computing-diurnal-mean-cycles)
+  - [What it does](#what-it-does)
+  - [Installation](#installation-1)
+  - [Basic Usage](#basic-usage)
+  - [Advanced Options](#advanced-options)
+  - [Mars Year Lookup](#mars-year-lookup-advanced)
+  - [Command Reference](#command-reference)
+- [Related Resources](#related-resources)
+
+---
 
 # convert_dm_pm_to_nc — README
 
@@ -23,7 +49,7 @@ A tiny CLI tool to convert GEM-Mars RPN files (dm + pm) to NetCDF4, with sane de
   - Momentum variables (UU, VV) interpolated to 102 common altitude levels
   - GZ set to height above surface (GZ_surface = 0)
 - **Optimized output**:
-  - NetCDF-4 format with lossless compression (zlib level 6)
+  - NetCDF-4 format with lossless compression
   - float32 precision (reduces file size)
   - CF-1.10 compliant metadata
 - **Progress tracking**: Optional tqdm progress bar
@@ -486,3 +512,28 @@ For full help including examples:
 ```bash
 python compute_diurnal_mean.py --help
 ```
+
+
+---
+
+## Related Resources
+
+### This Project
+- **Source Code:** [github.com/ludvdber/gem-mars-rpn2netcdf](https://github.com/ludvdber/gem-mars-rpn2netcdf)
+- **Institution:** [Royal Belgian Institute for Space Aeronomy (BIRA-IASB)](https://www.aeronomie.be/)
+
+### GEM-Mars Model & Tools
+- **fstd2nc Library:** [github.com/neishm/fstd2nc](https://github.com/neishm/fstd2nc) - Read RPN/FSTD files
+- **xarray Documentation:** [docs.xarray.dev](https://docs.xarray.dev/) - NetCDF manipulation in Python
+
+### NetCDF & CF Conventions
+- **CF-1.10 Conventions:** [cfconventions.org](http://cfconventions.org/) - Climate and Forecast metadata standard
+- **NetCDF Documentation:** [unidata.ucar.edu/software/netcdf](https://www.unidata.ucar.edu/software/netcdf/) - NetCDF format specs
+
+### Visualization Tools
+- **Paraview:** [paraview.org](https://www.paraview.org/) - 3D scientific visualization
+- **Panoply:** [giss.nasa.gov/tools/panoply](https://www.giss.nasa.gov/tools/panoply/) - NetCDF/HDF viewer from NASA
+
+### Performance Tools
+- **Numba:** [numba.pydata.org](https://numba.pydata.org/) - JIT compiler (used in compute_diurnal_mean.py)
+- **Dask:** [dask.org](https://dask.org/) - Parallel computing library
