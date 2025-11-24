@@ -1,3 +1,9 @@
+![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![CF Conventions](https://img.shields.io/badge/CF-1.10-orange.svg)
+![Status](https://img.shields.io/badge/status-production-brightgreen.svg)
+
+
 # convert_dm_pm_to_nc — README
 
 A tiny CLI tool to convert GEM-Mars RPN files (dm + pm) to NetCDF4, with sane defaults for science usage and batch processing across many subfolders.
