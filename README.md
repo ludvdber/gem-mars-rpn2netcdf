@@ -8,7 +8,6 @@
 
 **CLI tools for GEM-Mars atmospheric model:** Convert RPN/FSTD files to CF-compliant NetCDF-4 + compute diurnal mean cycles with Mars Year/Ls indexing.
 
-
 ## 📑 Table of Contents
 
 - [convert_dm_pm_to_nc.py](#convert_dm_pm_to_nc--readme)
@@ -44,7 +43,7 @@ A tiny CLI tool to convert GEM-Mars RPN files (dm + pm) to NetCDF4, with sane de
   - GZ: decametre → m (×10)
   - UU, VV: knots → m s⁻¹ (×0.5144)
   - WW: already in Pa s⁻¹ (unchanged)
-- **Vertical interpolation**: 
+- **Vertical interpolation**:
   - Thermodynamic variables (TT, PX, GZ, etc.) interpolated to 103 common altitude levels
   - Momentum variables (UU, VV) interpolated to 102 common altitude levels
   - GZ set to height above surface (GZ_surface = 0)
@@ -85,11 +84,13 @@ hl-b274/
 For each `dm/SUBDIR/file`, the script looks for the matching `pm/SUBDIR/file` and writes to `netcdf/SUBDIR/`.
 
 **Output naming**: Keeps the numbers from the RPN extension:
+
 ```
 hl-b274_dm_000000p_ls000.0000  →  netcdf/000960/hl-b274_000000p_ls000_0000.nc
 ```
 
 ## Installation
+
 - Python 3.11+ recommended.
   - xarray
   - netCDF4
@@ -98,14 +99,15 @@ hl-b274_dm_000000p_ls000.0000  →  netcdf/000960/hl-b274_000000p_ls000_0000.nc
   - numpy
 
 tqdm is optional (nice progress bar).
+
 ```
 pip install numpy xarray netCDF4 fstd2nc tqdm
 ```
 
-
 Linux system libs (if needed)
 
-Debian/Ubuntu: 
+Debian/Ubuntu:
+
 ```
 sudo apt-get install libhdf5-dev libnetcdf-dev
 ```
@@ -123,10 +125,10 @@ Define your ROOT (path to the folder that contains dm/, pm/, netcdf/)
 
   - ### Windows PowerShell
 
-      ``` 
+      ```
       $ROOT = "$env:USERPROFILE\Desktop\hl-b274"
       Set-Location C:\Users\USERPROFILE\PythonFile
-     ``` 
+     ```
   
   1. All subfolders and all files
 
@@ -138,28 +140,30 @@ Define your ROOT (path to the folder that contains dm/, pm/, netcdf/)
 
   - ### Windows PowerShell
 
-      ``` 
+      ```
       python .\convert_dm_pm_to_nc.py --root "$ROOT" --all
-     ``` 
+     ```
   
+1. One specific subfolder (e.g., 000960)
 
-2. One specific subfolder (e.g., 000960)
-
-``` 
+```
 python convert_dm_pm_to_nc.py --root "$ROOT" --dir 000960
 ```
 
-3. A range of subfolders (inclusive, lexical order)
+1. A range of subfolders (inclusive, lexical order)
+
 ```
 python convert_dm_pm_to_nc.py --root "$ROOT" --dir-range 000960 003840
 ```
 
-4. Within selected subfolders: only one file index (e.g., index 7. index starts from 0)
+1. Within selected subfolders: only one file index (e.g., index 7. index starts from 0)
+
 ```
 python convert_dm_pm_to_nc.py --root "$ROOT" --dir 000960 --one 7
 ```
 
-5. Within selected subfolders: a range of file indices (inclusive)
+1. Within selected subfolders: a range of file indices (inclusive)
+
 ```
 python convert_dm_pm_to_nc.py --root "$ROOT" --dir 000960 --range 0 3
 ```
@@ -170,7 +174,7 @@ Notes
 
 If the matching pm file is missing, the script logs SKIP and continues.
 
-With tqdm installed, you get a progress bar and a ```[i/total] WROTE <path> ``` line per output.
+With tqdm installed, you get a progress bar and a ```[i/total] WROTE <path>``` line per output.
 
 ## Selecting variables
 
@@ -179,6 +183,7 @@ By default, the script loads exactly the variables requested in the project spec
 ### Default variables (28 total)
 
 **3D Thermodynamic** (103 levels):
+
 - `TT` - Temperature (K)
 - `PX` - Pressure (Pa)
 - `GZ` - Geopotential height (m above surface)
@@ -189,10 +194,12 @@ By default, the script loads exactly the variables requested in the project spec
 - `RWIC` - Ice particle radius
 
 **3D Momentum** (102 levels):
+
 - `UU` - Eastward wind (m/s)
 - `VV` - Northward wind (m/s)
 
 **2D Surface**:
+
 - `P0` - Surface pressure (Pa)
 - `MTSF` - Surface temperature (K)
 - `MLOC` - Local time
@@ -207,21 +214,26 @@ By default, the script loads exactly the variables requested in the project spec
 - `altitudeM`: 102 (momentum vertical levels)
 
 You can override:
+
 - Keep all variables present:
+
 ```
 python convert_dm_pm_to_nc.py --root "$ROOT" --dir 000960 --all-vars
 ```
+
 - Keep a custom list (comma-separated, no spaces):
+
 ```
 python convert_dm_pm_to_nc.py --root "$ROOT" --dir 000960 --vars "TT,PX,GZ,WW,P0,UU,VV"
 ```
+
 ## Output & logging
 
-NetCDF written to ```netcdf/<SUBDIR>/...nc``` with zlib level 4 (lossless) and shuffle.
+NetCDF written to ```netcdf/<SUBDIR>/...nc``` with zlib level 6 (lossless) and shuffle.
 
 Console output is minimal:
 
-With tqdm: ```progress bar + [i/total] WROTE <output_path> ```per file.
+With tqdm: ```progress bar + [i/total] WROTE <output_path>```per file.
 
 Without tqdm: ```[i/total] progress lines with ETA and WROTE``` lines.
 
@@ -250,6 +262,7 @@ After converting RPN files to NetCDF, you can compute mean diurnal cycles (avera
 ### Installation
 
 Requires `numba` in addition to previous dependencies:
+
 ```bash
 pip install numba
 ```
@@ -257,6 +270,7 @@ pip install numba
 ### Basic Usage
 
 **1. Single directory, N days:**
+
 ```bash
 python compute_diurnal_mean.py \
   --netcdf "$ROOT/netcdf" \
@@ -266,6 +280,7 @@ python compute_diurnal_mean.py \
 ```
 
 **2. All directories, 10 days each:**
+
 ```bash
 python compute_diurnal_mean.py \
   --netcdf "$ROOT/netcdf" \
@@ -275,6 +290,7 @@ python compute_diurnal_mean.py \
 ```
 
 **3. Range of directories:**
+
 ```bash
 python compute_diurnal_mean.py \
   --netcdf "$ROOT/netcdf" \
@@ -354,6 +370,7 @@ python compute_diurnal_mean.py \
 ### Combined Examples
 
 **Example 1: First directory complete + 5 days from second**
+
 ```bash
 # Process first directory completely
 python compute_diurnal_mean.py \
@@ -372,6 +389,7 @@ python compute_diurnal_mean.py \
 ```
 
 **Example 2: Cross-directory with filters**
+
 ```bash
 # 5 means of 5 days, only Ls 0-30°, spanning multiple directories
 python compute_diurnal_mean.py \
@@ -387,22 +405,26 @@ python compute_diurnal_mean.py \
 ### Output naming
 
 **Standard mode:**
+
 ```
 Input:  netcdf/000960/hl-b274_000000p_ls000_0000.nc
 Output: netcdf_mean/000960/hl-b274_000000p_ls000_0000_sol000to004_5days_mean.nc
 ```
 
 **Cross-directory mode:**
+
 ```
 Output: netcdf_mean/cross_dirs/hl-b274_000000p_ls000_0000_sol000to029_30days_mean_crossdir.nc
 ```
 
 **Single mean mode:**
+
 ```
 Output: netcdf_mean/single_mean/hl-b274_000000p_ls000_0000_to_ls090_0000_sol000to500_501days_single_mean.nc
 ```
 
 The filename includes:
+
 - Starting file index (`000000p`)
 - Ls range (`ls000_0000` or `ls000_0000_to_ls090_0000`)
 - Sol range (`sol000to004`)
@@ -466,6 +488,7 @@ python compute_diurnal_mean.py \
 ```
 
 **What it does:**
+
 - Reads Excel/CSV lookup table with Mars Year, Ls ranges, and directories
 - Automatically finds the starting directory for your Mars Year + Ls
 - **Automatically searches all directories** (no need for `--all`)
@@ -473,12 +496,14 @@ python compute_diurnal_mean.py \
 - Adds `MY34` to output filename for easy identification
 
 **Requirements:**
+
 ```bash
 pip install pandas openpyxl
 ```
 
 **Lookup file format:**
 The lookup file should have columns:
+
 - `MY` - Mars Year (e.g., 34, 35)
 - `Ls start` - Starting Ls for this range
 - `Ls end` - Ending Ls for this range  
@@ -487,11 +512,13 @@ The lookup file should have columns:
 - `directory start` - Directory containing these timesteps
 
 **Mars Year parameters:**
+
 - `--mars-year MY` - Mars Year number (e.g., 34, 35) - **automatically enables cross-directory search**
 - `--ls-start LS` - Starting Ls (e.g., 9.61, 30.0)
 - `--lookup FILE` - Path to Excel (.xlsx) or CSV lookup file (required with --mars-year)
 
 **Example outputs:**
+
 ```
 # Without Mars Year
 hl-b274_000000p_ls007_1234_sol000to004_5days_mean.nc
@@ -501,6 +528,7 @@ hl-b274_000000p_ls007_1234_MY34_sol000to004_5days_mean.nc
 ```
 
 **Notes:**
+
 - `--mars-year` automatically enables cross-directory search (searches all directories for matching timesteps)
 - Can combine with `--max-means` to limit output
 - Can combine with `--ls-range` for additional filtering
@@ -509,31 +537,36 @@ hl-b274_000000p_ls007_1234_MY34_sol000to004_5days_mean.nc
 ### Help
 
 For full help including examples:
+
 ```bash
 python compute_diurnal_mean.py --help
 ```
-
 
 ---
 
 ## Related Resources
 
 ### This Project
+
 - **Source Code:** [github.com/ludvdber/gem-mars-rpn2netcdf](https://github.com/ludvdber/gem-mars-rpn2netcdf)
 - **Institution:** [Royal Belgian Institute for Space Aeronomy (BIRA-IASB)](https://www.aeronomie.be/)
 
 ### GEM-Mars Model & Tools
+
 - **fstd2nc Library:** [github.com/neishm/fstd2nc](https://github.com/neishm/fstd2nc) - Read RPN/FSTD files
 - **xarray Documentation:** [docs.xarray.dev](https://docs.xarray.dev/) - NetCDF manipulation in Python
 
 ### NetCDF & CF Conventions
+
 - **CF-1.10 Conventions:** [cfconventions.org](http://cfconventions.org/) - Climate and Forecast metadata standard
 - **NetCDF Documentation:** [unidata.ucar.edu/software/netcdf](https://www.unidata.ucar.edu/software/netcdf/) - NetCDF format specs
 
 ### Visualization Tools
+
 - **Paraview:** [paraview.org](https://www.paraview.org/) - 3D scientific visualization
 - **Panoply:** [giss.nasa.gov/tools/panoply](https://www.giss.nasa.gov/tools/panoply/) - NetCDF/HDF viewer from NASA
 
 ### Performance Tools
+
 - **Numba:** [numba.pydata.org](https://numba.pydata.org/) - JIT compiler (used in compute_diurnal_mean.py)
 - **Dask:** [dask.org](https://dask.org/) - Parallel computing library
