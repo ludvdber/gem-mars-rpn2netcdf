@@ -6,6 +6,8 @@
 ![NetCDF](https://img.shields.io/badge/format-NetCDF--4-blue.svg)
 ![Mars](https://img.shields.io/badge/planet-Mars-red.svg)
 
+> 🌍 **English version** | **[Version française](README_FR.md)**
+
 **CLI tools for GEM-Mars atmospheric model:** Convert RPN/FSTD files to CF-compliant NetCDF-4 + compute diurnal mean cycles with Mars Year/Ls indexing.
 
 ## 📑 Table of Contents
